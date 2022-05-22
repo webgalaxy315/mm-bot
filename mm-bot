@@ -1,0 +1,246 @@
+#!/usr/bin/env node 
+
+const pjson = require('./package.json')
+const commander = require('commander')
+const { prompt, Separator } = require('inquirer')
+const dotenv = require('dotenv')
+const ethers = require('ethers')
+const path = require('path')
+const fs = require('fs')
+const TomoX = require('tomoxjs')
+
+let profileDir = path.resolve(require('os').homedir(), '.mm-bot')
+if (!fs.existsSync(profileDir)){
+    fs.mkdirSync(profileDir)
+}
+
+let configPath = path.resolve(path.resolve(profileDir, 'config'))
+
+commander
+    .version(pjson.version)
+    .allowUnknownOption()
+    .option('-C --config <path>', 'set config path. defaults to $HOME/.mm-bot/config')
+    .description('MM-BOT CLI')
+    .action(async (params) => {
+        configPath = params.config || configPath
+        dotenv.config({ path: configPath })
+
+        if ((process.argv.indexOf('--help') < 0) && (process.argv.indexOf('init') < 0)
+            && (process.argv.indexOf('info') < 0)) {
+            if (!process.env.MAIN_PKEY) {
+                console.log('Run `mm-bot init` to setup environment')
+                process.exit(1)
+            }
+        }
+    })
+
+if (process.argv.indexOf('--help') < 0 && process.argv.indexOf('-h') < 0) {
+    commander.parseAsync(process.argv).then(() => {
+        run()
+    })
+} else {
+    run()
+}
+
+function run() {
+    commander
+        .command('init')
+        .description('setup/init environment')
+        .option('-p, --password <password>', 'password', '')
+        .option('-k, --keystore <keystore>', 'path to keystore file')
+        .action(async (params) => {
+            const questions = [{
+                type : 'input',
+                name : 'baseToken',
+                message : 'Enter base token address...'
+            }, {
+                type : 'input',
+                name : 'quoteToken',
+                message : 'Enter quote token address...'
+            }]
+            if (!params.keystore) {
+                questions.push({
+                    type : 'password',
+                    name : 'mainPKey',
+                    message : 'Enter private key for bot main wallet (default: generate random pkey)...'
+                })
+            }
+            questions.push({
+                type : 'list',
+                name : 'priceProvider',
+                message : 'Select the price provider:',
+                default: 'pool',
+                choices: ['pool', new Separator(), 'coingecko', 'binance', 'ftx', 'uniswap']
+            })
+            questions.push({
+                type : 'input',
+                name : 'baseName',
+                message : `
+Find your token name at https://www.coingecko.com/api/documentations/v3#/coins/get_coins_list
+Enter your base token name...`,
+                default: '',
+                when: (answers) => answers.priceProvider === 'coingecko'
+            })
+            questions.push({
+                type : 'input',
+                name : 'quoteName',
+                message : 'Enter your quote token name...',
+                default: '',
+                when: (answers) => answers.priceProvider === 'coingecko'
+            })
+            questions.push({
+                type : 'input',
+                name : 'seedPrice',
+                message : 'Enter the token price ...',
+                when: (answers) => answers.priceProvider === 'pool'
+            })
+	    questions.push({
+                type : 'input',
+                name : 'baseErc20Address',
+                message : 'Enter baseToken address on Ethereum network...',
+                when: (answers) => answers.priceProvider === 'uniswap'
+            })
+            questions.push({
+                type : 'input',
+                name : 'baseErc20Decimal',
+                message : 'Enter decimal of baseToken on Ethereum network...',
+                when: (answers) => answers.priceProvider === 'uniswap'
+            })
+            questions.push({
+                type : 'input',
+                name : 'quoteErc20Address',
+                message : 'Enter quoteToken address on Ethereum network...',
+                when: (answers) => answers.priceProvider === 'uniswap'
+            })
+            questions.push({
+                type : 'input',
+                name : 'quoteErc20Decimal',
+                message : 'Enter decimal of quoteToken on Ethereum network...',
+                when: (answers) => answers.priceProvider === 'uniswap'
+            })
+            questions.push({
+                type : 'password',
+                name : 'infuraKey',
+                message : 'Enter infura api key to retrieve data on Ethereum network',
+                when: (answers) => answers.priceProvider === 'uniswap'
+            })
+            prompt(questions).then(async answers => {
+                try {
+                    let tomojsPath = path.resolve(configPath)
+                    let address = ''
+
+                    if (params.keystore) {
+                        let keydata = fs.readFileSync(params.keystore);
+                        let json = JSON.parse(keydata);
+                        let wallet = await ethers.Wallet.fromEncryptedJson(JSON.stringify(json), params.password)
+                        answers.mainPKey = wallet.privateKey
+                        address = wallet.address
+                    }
+
+                    if (!answers.mainPKey) {
+                        let randomWallet = ethers.Wallet.createRandom()
+                        answers.mainPKey = randomWallet.privateKey
+                        address = randomWallet.address
+                    } else {
+                        let wallet = new ethers.Wallet(answers.mainPKey)
+                        address = wallet.address
+                    }
+
+                    let rWallet = ethers.Wallet.createRandom()
+                    let randomPKeys = rWallet.privateKey
+                    rWallet = ethers.Wallet.createRandom()
+                    randomPKeys = `${randomPKeys},${rWallet.privateKey}`
+
+                    let relayerUrl = 'https://dex.tomochain.com'
+                    let tomox = new TomoX(relayerUrl, '', answers.mainPKey)
+                    let quoteSymbol = (await tomox.getTokenInfo(answers.quoteToken)).symbol
+                    let baseSymbol = (await tomox.getTokenInfo(answers.baseToken)).symbol
+                    fs.writeFile(
+                        tomojsPath,
+`MAIN_PKEY=${answers.mainPKey}
+RANDOM_PKEYS=${randomPKeys}
+MAIN_ADDR=${address}
+BASE_TOKEN=${answers.baseToken}
+BASE_SYMBOL=${baseSymbol}
+BASE_NAME=${answers.baseName}
+QUOTE_TOKEN=${answers.quoteToken}
+QUOTE_SYMBOL=${quoteSymbol}
+QUOTE_NAME=${answers.quoteName}
+PRICE_PROVIDER=${answers.priceProvider}
+RELAYER_URL=${relayerUrl}
+RPC_URL=https://rpc.tomochain.com
+ORDERBOOK_LENGTH=10
+SEED_PRICE=${answers.seedPrice}
+BOT_SPEED=200000
+WASH_SPEED=200000
+ORDER_SIZE=10
+RANDOM_RANGE=50
+WASH_ORDER_SIZE=15
+ORDER_STEP=0.05
+BASE_ERC20_ADDRESS=${answers.baseErc20Address}
+BASE_ERC20_DECIMAL=${answers.baseErc20Decimal}
+QUOTE_ERC20_ADDRESS=${answers.quoteErc20Address}
+QUOTE_ERC20_DECIMAL=${answers.quoteErc20Decimal}
+INFURA_KEY=${answers.infuraKey}`
+                        , function (err) {
+                        if (err) throw err;
+                        console.log('Address:', address);
+                        console.log('Saved!');
+                    })
+                } catch(e) {
+                    console.log(e)
+                }
+            })
+        })
+
+    commander
+        .command('info')
+        .description('show environment')
+        .action(async () => {
+            let info = {}
+            info.CONFIG_PATH = configPath
+            info.MAIN_ADDR = process.env.MAIN_ADDR
+            info.BASE_TOKEN = process.env.BASE_TOKEN
+            info.BASE_SYMBOL = process.env.BASE_SYMBOL
+            info.QUOTE_TOKEN = process.env.QUOTE_TOKEN
+            info.QUOTE_SYMBOL = process.env.QUOTE_SYMBOL
+            info.PRICE_PROVIDER = process.env.PRICE_PROVIDER
+
+	    // uniswap provider information
+	    if (process.env.BASE_ERC20_ADDRESS) {
+	    	info.BASE_ERC20_ADDRESS = process.env.BASE_ERC20_ADDRESS
+	    }
+            if (process.env.BASE_ERC20_DECIMAL) {
+                info.BASE_ERC20_DECIMAL = process.env.BASE_ERC20_DECIMAL
+            }
+            if (process.env.QUOTE_ERC20_ADDRESS) {
+                info.QUOTE_ERC20_ADDRESS = process.env.QUOTE_ERC20_ADDRESS
+            }
+            if (process.env.QUOTE_ERC20_DECIMAL) {
+                info.QUOTE_ERC20_DECIMAL = process.env.QUOTE_ERC20_DECIMAL
+            }
+            console.log(info)
+        })
+
+    commander
+        .version('1.0.0')
+        .description('TomoDEX Market Marker')
+
+    commander
+        .command('start')
+        .action(async () => {
+            const spot = require('./commands/spot')
+            await spot.run()
+        })
+
+    commander
+        .command('balance')
+        .action(async () => {
+            let tomox = new TomoX(process.env.RELAYER_URL, '', process.env.MAIN_PKEY)
+            console.log(await tomox.getAccount(false, process.env.BASE_TOKEN))
+            console.log(await tomox.getAccount(false, process.env.QUOTE_TOKEN))
+        })
+
+    commander.parse(process.argv)
+}
+

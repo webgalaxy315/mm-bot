@@ -1,0 +1,42 @@
+language: node_js
+dist: bionic
+node_js:
+  - "10"
+  - "12"
+
+jobs:
+  include:
+    - stage: Lint
+      script: npm run lint
+    - stage: Npm release
+      node_js: "10"
+      script:
+        - echo "Deploying to npm ..."
+      deploy:
+        provider: npm
+        email: $NPM_EMAIL
+        api_key: $NPM_API_KEY
+        on:
+          tags: true
+
+    - stage: Github release
+      before_install:
+        - npm install -g nexe@3.3.3
+      script:
+        - nexe -i mm-bot -t linux-x64-10.18.0 -o mm-bot.$TRAVIS_TAG.linux-x64 -r ./
+      deploy:
+        provider: releases
+        api_key: $GH_TOKEN
+        overwrite: true
+        skip_cleanup: true
+        file: mm-bot.$TRAVIS_TAG.linux-x64
+        on:
+          tags: true
+
+stages:
+  - name: Lint
+  - name: Test
+  - name: Npm release
+    if: type != pull_request AND branch =~ ^v AND tag IS present AND repo = tomochain/mm-bot
+  - name: Github release
+    if: type != pull_request AND branch =~ ^v AND tag IS present AND repo = tomochain/mm-bot
